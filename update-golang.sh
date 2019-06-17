@@ -30,7 +30,7 @@ log_stdin() {
 # defaults
 #release_list=https://golang.org/doc/devel/release.html
 release_list=https://golang.google.cn/dl/
-source=https://dl.google.com/go/
+source=https://dl.google.com/go
 destination=/usr/local
 release=1.12.5 ;# just the default. the script detects the latest available release.
 arch_probe="uname -m"
