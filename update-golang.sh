@@ -8,7 +8,7 @@
 
 # ignore runtime environment variables
 # shellcheck disable=SC2153
-version=0.22
+version=0.23
 
 set -o pipefail
 
@@ -32,7 +32,7 @@ log_stdin() {
 release_list=https://golang.google.cn/dl/
 source=https://dl.google.com/go
 destination=/usr/local
-release=1.12.5 ;# just the default. the script detects the latest available release.
+release=1.13.7 ;# just the default. the script detects the latest available release.
 arch_probe="uname -m"
 
 os=$(uname -s | tr "[:upper:]" "[:lower:]")
@@ -79,21 +79,46 @@ exclude_beta() {
 scan_versions() {
     local fetch="$*"
     debug scan_versions: from "$release_list"
-    $fetch "$release_list" | exclude_beta | grep -E -o 'go[0-9\.]+' | grep -E -o '[0-9]\.[0-9]+(\.[0-9]+)?' | sort -V | uniq
+    if has_cmd jq; then
+        local rl="$release_list?mode=json"
+        msg "parsing with jq from $rl"
+        $fetch "$rl" | jq -r '.[].files[].version' | sort | uniq | exclude_beta | sed -e 's/go//' | sort -V
+    else
+        $fetch "$release_list" | exclude_beta | grep -E -o 'go[0-9\.]+' | grep -E -o '[0-9]\.[0-9]+(\.[0-9]+)?' | sort -V | uniq
+    fi
 }
 
 has_cmd() {
-	command -v "$1" >/dev/null
+	#command -v "$1" >/dev/null
+	hash "$1" 2>/dev/null
+}
+
+tmp='' ;# will be set
+save_dir=$PWD
+previous_install='' ;# will be set
+cleanup() {
+    [ -n "$tmp" ] && [ -f "$tmp" ] && msg cleanup: $tmp && rm $tmp
+    [ -n "$save_dir" ] && cd "$save_dir" || exit 2
+    [ -n "$previous_install" ] && msg remember to delete previous install saved as: "$previous_install"
+}
+
+die() {
+    msg "die: $*"
+    cleanup
+    exit 3
 }
 
 find_latest() {
+    debug find_latest: built-in version: "$release"
     debug find_latest: from "$release_list"
     local last=
     local fetch=
     if has_cmd wget; then
 	fetch="wget -qO-"
-    else
+    elif has_cmd curl; then
 	fetch="curl --silent"
+    else
+	die "find_latest: missing both 'wget' and 'curl'"
     fi
     last=$(scan_versions "$fetch" | tail -1)
     if echo "$last" | grep -q -E '[0-9]\.[0-9]+(\.[0-9]+)?'; then
@@ -144,21 +169,6 @@ goroot=$destination/go
 filepath=$cache/$filename
 new_install=$destination/$label
 
-tmp='' ;# will be set
-save_dir=$PWD
-previous_install='' ;# will be set
-cleanup() {
-    [ -n "$tmp" ] && [ -f "$tmp" ] && msg cleanup: $tmp && rm $tmp
-    [ -n "$save_dir" ] && cd "$save_dir" || exit 2
-    [ -n "$previous_install" ] && msg remember to delete previous install saved as: "$previous_install"
-}
-
-die() {
-    msg "die: $*"
-    cleanup
-    exit 3
-}
-
 solve() {
     local path=$1
     local p=
@@ -190,9 +200,11 @@ download() {
 	    if has_cmd wget; then
               wget -O "$abs_filepath" "$url" || die could not download using wget from: "$url"
 	      [ -f "$abs_filepath" ] || die missing file downloaded with wget: "$abs_filepath"
-            else
+            elif has_cmd curl; then
               curl -o "$abs_filepath" "$url" || die could not download using curl from: "$url"
 	      [ -f "$abs_filepath" ] || die missing file downloaded with curl: "$abs_filepath"
+            else
+              die "download: missing both 'wget' and 'curl'"
             fi
 	fi
     else
