@@ -8,7 +8,7 @@
 
 # ignore runtime environment variables
 # shellcheck disable=SC2153
-version=0.23
+version=0.24
 
 set -o pipefail
 
@@ -32,7 +32,7 @@ log_stdin() {
 release_list=https://golang.google.cn/dl/
 source=https://dl.google.com/go
 destination=/usr/local
-release=1.13.7 ;# just the default. the script detects the latest available release.
+release=1.16 ;# just the default. the script detects the latest available release.
 arch_probe="uname -m"
 
 os=$(uname -s | tr "[:upper:]" "[:lower:]")
@@ -96,8 +96,11 @@ has_cmd() {
 tmp='' ;# will be set
 save_dir=$PWD
 previous_install='' ;# will be set
+declutter='' ;# will be set
+tar_to_remove='' ;# will be set
 cleanup() {
     [ -n "$tmp" ] && [ -f "$tmp" ] && msg cleanup: $tmp && rm $tmp
+    [ -n "$declutter" ] && [ -n "$tar_to_remove" ] && [ -f "$tar_to_remove" ] && msg cleanup: $tar_to_remove && rm $tar_to_remove
     [ -n "$save_dir" ] && cd "$save_dir" || exit 2
     [ -n "$previous_install" ] && msg remember to delete previous install saved as: "$previous_install"
 }
@@ -159,6 +162,7 @@ PROFILED=$profiled
 CACHE=$cache
 GOPATH=$GOPATH
 DEBUG=$DEBUG
+
 EOF
 }
 
@@ -261,6 +265,7 @@ untar() {
     local cmd="tar -x -f $abs_filepath"
     msg untar: "$cmd"
     $cmd || die untar: failed: "$abs_filepath"
+    tar_to_remove="$abs_filepath"
 }
 
 relink() {
@@ -320,18 +325,15 @@ running_as_root() {
 }
 
 perm_build_cache() {
-	local gocache
-	gocache=$("$abs_gotool" env | grep GOCACHE)            ;# grab GOCACHE=path
-
 	local buildcache
-	buildcache=$(echo "$gocache" | awk -F= '{ print $2 }') ;# grab path
-	buildcache=$(eval echo "$buildcache")                  ;# unquote
+	buildcache=$($abs_gotool env GOCACHE)
 
 	local own
 	own=":"
 
 	if running_as_root; then
 		# running as root - try user id from sudo
+		buildcache=$(sudo -i -u "$SUDO_USER" "$abs_gotool" env GOCACHE)
 		own="$SUDO_UID:$SUDO_GID"
 	fi
 
@@ -344,16 +346,32 @@ perm_build_cache() {
 	chown -R "$own" "$buildcache"
 }
 
+unsudo() {
+	if running_as_root; then
+		# shellcheck disable=SC2068
+		msg unsudo: running_as_root:"$SUDO_USER": $@
+		# shellcheck disable=SC2068
+		sudo -i -u "$SUDO_USER" $@
+	else
+		# shellcheck disable=SC2068
+		msg unsudo: non_root: $@
+		# shellcheck disable=SC2068
+		$@
+	fi
+}
+
 test_runhello() {
     local ret=1
     local t="$abs_gotool version"
     if [ "$abs_goroot" != $default_goroot ]; then
         msg testing: GOROOT="$abs_goroot" "$t"
-        GOROOT=$abs_goroot $t | log_stdin
+        # shellcheck disable=SC2086
+        GOROOT=$abs_goroot unsudo $t | log_stdin
         ret=$?
     else
         msg testing: "$t"
-        $t | log_stdin
+        # shellcheck disable=SC2086
+        unsudo $t | log_stdin
         ret=$?
     fi
     if [ $ret -eq 0 ]; then
@@ -363,13 +381,11 @@ test_runhello() {
     fi
 
     local hello_tmp=
-    hello_tmp=$(mktemp -t hello-tmpXXXXXXXX)".go"
+    hello_tmp=$(unsudo mktemp -t hello-tmpXXXXXXXX)".go"
 
-    cat >"$hello_tmp" <<__EOF__
+    unsudo tee "$hello_tmp" >/dev/null <<__EOF__
 package main
-
 import "fmt"
-
 func main() {
 	fmt.Printf("hello, world\n")
 }
@@ -381,11 +397,13 @@ __EOF__
     t="$abs_gotool run $abs_hello"
     if [ "$abs_goroot" != $default_goroot ]; then
         msg testing: GOROOT="$abs_goroot" "$t"
-        GOROOT=$abs_goroot $t | log_stdin
+        # shellcheck disable=SC2086
+        GOROOT=$abs_goroot unsudo $t | log_stdin
         ret=$?
     else
         msg testing: "$t"
-        $t | log_stdin
+        # shellcheck disable=SC2086
+        unsudo $t | log_stdin
         ret=$?
     fi
     if [ $ret -eq 0 ]; then
@@ -450,11 +468,14 @@ case "$1" in
 	remove_golang
 	exit 0
 	;;
+    -declutter)
+	declutter="true"
+	;;
     '')
 	;;
     *)
 	msg unknown option: "$1"
-	echo >&2 usage: "$me [-v] [remove]"
+	echo >&2 usage: "$me [-v] [remove] [-declutter]"
 	exit 1
 	;;
 esac
